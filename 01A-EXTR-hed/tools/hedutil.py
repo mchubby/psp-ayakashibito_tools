@@ -86,7 +86,7 @@ class HedEntry:
             if size_low == 0:
                 self.size = self.rounded_size
             else:
-                self.size = size_low | 0x800 * ((size_sect - 1) & 0xFFFF0000)
+                self.size = size_low | ((0x800 * (size_sect - 1)) & 0xFFFF0000)
 
         elif len(block) == 4:
             ofs_low, ofssz_high = unpack('<HH', block)
