@@ -2,7 +2,7 @@
 #
 # allpac.hed/.nam/.mrg extraction & creation utility
 # For more information, see EXTR hed.md, REIN hed.md and specs/hed_format.md
-"""hedutil version 1.0, Copyright (C) 2014 Nanashi3.
+"""hedutil version 1.1, Copyright (C) 2014 Nanashi3.
 
 hedutil comes with ABSOLUTELY NO WARRANTY.
 
@@ -14,6 +14,7 @@ import sys
 import argparse
 from sys import stderr
 from struct import unpack, unpack_from, pack
+import re, glob
 import yaml
 from collections import OrderedDict
 from base64 import b64encode
@@ -173,6 +174,7 @@ def write_entry_with_padding(infile, entry, outfile):
             outfile.write(b'\x0C' + 15 * b'\x00')
             complement += 0x10
 
+#############################################################################
 
 def parse_args():
     parser = argparse.ArgumentParser(description=__doc__, add_help=False)
@@ -184,12 +186,12 @@ def parse_args():
             help='Output filelist path (default: none -- only unpack files)')
     parser_unpack.add_argument('input', metavar='input.hed', help='Input .hed file')
 
-    parser_replace = subparsers.add_parser('replace', help='replace an archive entry in-place and modify an existing filelist')
+    parser_replace = subparsers.add_parser('replace', help='replace an archive entry in-place and modify an existing filelist. You may omit -n/-i when providing a wildcard expression to --source-file')
     parser_replace.add_argument('-f', '--filelist', 
             required=True, dest='filelist', type=argparse.FileType('r'),
             help='Subject filelist path, modified in-place [REQUIRED]')
     parser_replace.add_argument('-s', '--source-file', 
-            required=True, dest='source', metavar='sourcepath', type=argparse.FileType('rb'),
+            required=True, dest='source', metavar='sourcepath',
             help='File path to inserted file [REQUIRED]')
     replace_group = parser_replace.add_mutually_exclusive_group()
     replace_group.add_argument('-i', '--index', 
@@ -212,7 +214,9 @@ def parse_args():
 
     return parser, parser.parse_args()
 
-
+#############################################################################
+# unpack verb #
+###############
 def unpack_verb(args):
     basestem = os.path.splitext(os.path.basename(args.input))[0]
     in_hed = args.input
@@ -266,16 +270,14 @@ def unpack_verb(args):
     print('Output Directory: {}'.format(outputdir), file=stderr)
 
 
+#############################################################################
+# replace verb #
+################
 def replace_verb(args):
-    if (args.index is None) and (args.name is None):
-        print("ERR: failed to process \"{0}\" - you need to specify either --index or --name for replacing an entry".format(args.filelist.name), file=stderr)
-        sys.exit(1)
-
     basestem = os.path.splitext(os.path.basename(args.subject))[0]
     in_hed = args.subject
     in_mrg = basestem + '.mrg'
     hedfile = mrgfile = None
-    srcfile = None
 
     try:
         if str.upper(os.path.splitext(args.subject)[1]) != '.HED':
@@ -286,8 +288,6 @@ def replace_verb(args):
         print("ERR: [{1}] failed to process \"{0}\" - {2}".format(args.subject, type(exc).__name__, str(exc)), file=stderr)
         sys.exit(1)
 
-
-    search_by_name = args.name is not None
     yamlobj = None
     try:
         yamlobj = yaml.load(args.filelist)
@@ -296,39 +296,50 @@ def replace_verb(args):
         sys.exit(1)
 
     print('Loaded Filelist: {0} >> {1}'.format(yamlobj['original name'], yamlobj['storage directory']), file=stderr)
-    entry_length = yamlobj['hed record length']
 
-    if not search_by_name:
-        if (args.index < 0) or (args.index >= len(yamlobj['entries'])):
-            print("ERR: failed to process \"{0}\" - replace by --index '{1}' out of bounds [0, {2}]".format(args.filelist.name, args.index, len(yamlobj['entries']) - 1), file=stderr)
+    sourcepaths = []
+    if re.search('[*]|[?]', args.source) is not None:
+        sourcepaths = [x for x in glob.iglob(args.source) if os.path.isfile(x)]
+        if len(sourcepaths) == 0:
+            print("ERR: failed to process \"{0}\" - --source expression {1} does not match any file".format(args.filelist.name, args.source), file=stderr)
             sys.exit(1)
     else:
-        if yamlobj['has nam filelist'] == False:
-            print("ERR: failed to process \"{0}\" - replace by --name '{1}' while no .nam is used for this .hed. Use --index instead".format(args.filelist.name, args.name), file=stderr)
+        if os.path.isdir(args.source):
+            sourcepaths = [x for x in glob.iglob(os.path.join(args.source, '*')) if os.path.isfile(x)]
+            if len(sourcepaths) == 0:
+                print("ERR: failed to process \"{0}\" - no file match in --source {1} directory".format(args.filelist.name, args.source), file=stderr)
             sys.exit(1)
+        elif os.path.isfile(args.source):
+            sourcepaths = [args.source]
+            if (args.index is None) and (args.name is None):
+                args.name = os.path.basename(args.source)
             
-        args.index = get_entry_index_by_name(yamlobj['entries'], args.name)
-        if (args.index < 0):
-            print("ERR: failed to process \"{0}\" - replace by --name '{1}' entry not found. Check if file case matches".format(args.filelist.name, args.name), file=stderr)
+    if len(sourcepaths) == 0:
+        print("ERR: failed to process \"{0}\" - --source {1} does not match any file".format(args.filelist.name, args.source), file=stderr)
             sys.exit(1)
+    elif len(sourcepaths) == 1:
+        special_first = True
+    else:
+        special_first = False
+        if (args.index is not None) or (args.name is not None):
+            print("WRN: ignoring --index/--name for --source [wildcard]. It is not needed", file=stderr)
+            args.index = args.name = None
 
-    hedfile.seek(args.index * entry_length)
-    entry = HedEntry(hedfile.read(entry_length))
-    print('Replacing: idx={0} {1} - orgOfs-Sz:{2:08X}-{3}b'.format(args.index, yamlobj['entries'][args.index]['path'], entry.offset, entry.size), file=stderr)
-    
-    if os.path.getsize(args.source.name) > entry.rounded_size:
-        mrgfile.seek(0, 2)
-        entry.offset = mrgfile.tell()  # should be on 0x800 boundary
-    entry.size = os.path.getsize(args.source.name)
-    size_low = entry.size & 0xFFFF
-    size_sect = entry.size // 0x800
-    entry.rounded_size = 0x800 * size_sect if size_low == 0 else 0x800 * (size_sect + 1)
-    write_entry_with_padding(args.source, entry, mrgfile)
-    
-    hedfile.seek(args.index * entry_length)
-    hedfile.write(entry.to_block(entry_length))
+    nsuccess = nfailed = 0
 
-    yamlobj['entries'][args.index]['path'] = args.source.name
+    for spath in sourcepaths:
+        if (special_first == True):
+            ent_index = args.index
+            ent_name = args.name
+            is_first = False
+        else:
+            ent_index = None
+            ent_name = os.path.basename(spath)
+        result, newyaml = replace_entry(yamlobj, {'filelist':args.filelist.name, 'path':spath, 'index':ent_index, 'name':ent_name, 'hedfile':hedfile, 'mrgfile':mrgfile})
+        if result==0: nsuccess += 1
+        if result!=0: nfailed += 1
+
+    print("Success = {0}\nFailed = {1}".format(nsuccess, nfailed))
 
     try:
         # reopen with truncation
@@ -348,6 +359,50 @@ def replace_verb(args):
         print(">> Failsafe save OK, please manually rename it as {}.".format(args.filelist.name), file=stderr)
         sys.exit(2)
 
+    sys.exit(0)
+
+
+def replace_entry(yamlobj, opts):
+    entry_length = yamlobj['hed record length']
+    search_by_name = opts['name'] is not None
+    if not search_by_name:
+        if (opts['index'] < 0) or (opts['index'] >= len(yamlobj['entries'])):
+            print("ERR: failed to process \"{0}\" - replace by --index '{1}' out of bounds [0, {2}]".format(opts['filelist'], opts['index'], len(yamlobj['entries']) - 1), file=stderr)
+            return 2
+    else:
+        if yamlobj['has nam filelist'] == False:
+            print("ERR: failed to process \"{0}\" - replace by --name '{1}' while no .nam is used for this .hed. Use --index instead".format(opts['filelist'], opts['name']), file=stderr)
+            return 2
+            
+        opts['index'] = get_entry_index_by_name(yamlobj['entries'], opts['name'])
+        if (opts['index'] < 0):
+            print("ERR: failed to process \"{0}\" - replace by --name '{1}' entry not found. Check if file case matches".format(opts['filelist'], opts['name']), file=stderr)
+            return 2
+
+    opts['hedfile'].seek(opts['index'] * entry_length)
+    entry = HedEntry(opts['hedfile'].read(entry_length))
+    print('Replacing: idx={0} {1} - orgOfs-Sz:{2:08X}-{3}b'.format(opts['index'], yamlobj['entries'][opts['index']]['path'], entry.offset, entry.size), file=stderr)
+    
+    #if replaced entry has larger size, allocate new space
+    entry.size = os.path.getsize(opts['path'])
+    if os.path.getsize(opts['path']) > entry.rounded_size:
+        opts['mrgfile'].seek(0, 2)
+        entry.offset = opts['mrgfile'].tell()  # should be on 0x800 boundary
+        print('- newOfs-Sz:{0:08X}-{1}b'.format(entry.offset, entry.size), file=stderr)
+    size_low = entry.size & 0xFFFF
+    size_sect = entry.size // 0x800
+    entry.rounded_size = 0x800 * size_sect if size_low == 0 else 0x800 * (size_sect + 1)
+    write_entry_with_padding(open(opts['path'],'rb'), entry, opts['mrgfile'])
+    
+    opts['hedfile'].seek(opts['index'] * entry_length)
+    opts['hedfile'].write(entry.to_block(entry_length))
+
+    yamlobj['entries'][opts['index']]['path'] = opts['path']
+    return [0, yamlobj]
+
+#############################################################################
+# repack verb #
+###############
 
 def repack_verb(args):
     # TODO
