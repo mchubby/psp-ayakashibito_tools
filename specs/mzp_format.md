@@ -53,10 +53,38 @@ Example:
 	2 bytes - tileXCount
 	2 bytes - tileYCount
 	2 bytes - bitmap characteristics (palettized, etc.)
-	2 bytes - unknown?
-	{ if unknown? == 0x01: (256 * 4 bytes): color palette }
+	2 bytes - bitDepthVal?
+	{ palette description }
+    { image data }
+
+
+ II.1)  Palette description
+----------------------------
+
+- if bitDepthVal & 0x01 != 0:  
+    (256 * 4 bytes): **8bpp color palette**
+
+- elif bitDepthVal & 0x10 != 0:  
+    ( 16 * 4 bytes): **4bpp color palette**
 
 beware, palette data is ABGR (RR GG BB AA in little-endian)
 
--to be edited-
+
+
+ II.2)  Image data
+-------------------
+
+#### Length of image data
+
+
+- if bitDepthVal & 0x01 != 0:  
+    8bpp index (1 Byte per pixel)  
+    expecting tileWidth * tileHeight bytes
+
+- elif bitDepthVal & 0x10 != 0:  
+    4bpp index (1 Nibble per pixel)  
+    expecting tileWidth * tileHeight / 2 bytes
+
+
+
 

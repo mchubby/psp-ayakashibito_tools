@@ -3,6 +3,7 @@ from struct import unpack, pack
 from subprocess import call
 import glob
 import zlib
+from mzx.decomp_mzx0 import mzx0_decompress
  
 
 # http://blog.flip-edesign.com/?p=23
@@ -88,35 +89,114 @@ def chunks(l, n):
 #           descriptor;         // Image attribute flags.
 # };
 
+
+def is_indexed_bitmap(bmpinfo):
+    return bmpinfo == 0x01
+
+
 if __name__ == '__main__':
     outfilepattern = "tile{}.tga"
     # indexed 8bpp RGBa with 256-entry RGBa palette (0x400 bytes)
     #bm_bpp = 8
     #bm_pal = 0x400
 
-    desc = open(glob.glob("*000.bin")[0], 'rb')
-    width, height, tile_width, tile_height, tile_x_count, tile_y_count, bmp_type, unk = unpack('<HHHHHHHH', desc.read(0x10))
+    descpath = glob.glob("*000.bin")[0]
+    desc = open(descpath, 'rb')
+    width, height, tile_width, tile_height, tile_x_count, tile_y_count, bmp_type, bmp_depth = unpack('<HHHHHHHH', desc.read(0x10))
     paletteblob = b''
     palettepng = b''
     transpng = b''
     imagedata = b''
-    bitmapbpp    =    4 if unk == 0x10 else 8
-    palettecount = 0x10 if unk == 0x10 else 0x100
-    
-    
-    for i in range(palettecount):
-        r = desc.read(1)
-        g = desc.read(1)
-        b = desc.read(1)
-        a = desc.read(1)
-        paletteblob += (b + g + r + a)
-        palettepng += (r + g + b)
-        transpng += a
-    for i in range(palettecount, 0x100):
-        paletteblob += b'\x00\x00\x00\xFF'
-        palettepng += b'\x00\x00\x00'
-        transpng += b'\xFF'
+    if bmp_type not in [0x01, 0x03]:
+        print("Unknown type {} 0x{:02X}".format(descpath, bmp_type))
+        call(["cmd", "/c", "pause"])
+        sys.exit(1)
+    if is_indexed_bitmap(bmp_type):
+        if bmp_depth == 0x01:
+            bitmapbpp    =    8
+            palettecount = 0x100
+        elif bmp_depth == 0x00 or bmp_depth == 0x10:
+            bitmapbpp    =    4
+            palettecount = 0x10
+        elif bmp_depth == 0x11 or bmp_depth == 0x91: # experimental
+            bitmapbpp    =    8
+            palettecount = 0x100
+        else:
+            print("Unknown depth {} 0x{:02X}".format(descpath, bmp_depth))
+            call(["cmd", "/c", "pause"])
+            sys.exit(1)
 
+        for i in range(palettecount):
+            r = desc.read(1)
+            g = desc.read(1)
+            b = desc.read(1)
+            a = desc.read(1)
+            paletteblob += (b + g + r + a)
+            palettepng += (r + g + b)
+            transpng += a
+        for i in range(palettecount, 0x100):
+            paletteblob += b'\x00\x00\x00\xFF'
+            palettepng += b'\x00\x00\x00'
+            transpng += b'\xFF'
+
+    elif bmp_type == 0x03:  # 'PEH' 8bpp + palette
+        print("Unsupported type {} 0x{:02X} (PEH)".format(descpath, bmp_type))
+        call(["cmd", "/c", "pause"])
+        sys.exit(1)
+
+    rows = [b'']  * height
+
+    mzxtiles = list(glob.iglob("*.0*.mzx"))
+    for y in range(tile_y_count):
+        startrownum = y * tile_height
+        rowcount = min(height,startrownum+tile_height) - startrownum
+        for x in range(tile_x_count):
+            #print("copy {}rows at {},{}".format(rowcount, x * tile_width, startrownum))
+            #sys.exit(0)
+            mzxfilepath = mzxtiles.pop(0)
+            with open(mzxfilepath, 'rb') as mzxdata:
+                sig, size = unpack('<LL', mzxdata.read(0x8))
+                status, decbuf = mzx0_decompress(mzxdata, os.path.getsize(mzxfilepath) - 8, size)
+                if bitmapbpp == 4:
+                    tiledata = b''
+                    for octet in decbuf:
+                        thebyte = Byte(octet)
+                        tiledata += pack('BB', thebyte.high, thebyte.low)
+                    decbuf = tiledata
+                rowsmzx = list(chunks(decbuf, tile_width))
+                
+                for i, tilerow_rawpixels in enumerate(chunks(decbuf, tile_width * bitmapbpp // 8)):
+                    if i >= rowcount:
+                        break
+                    curwidth = len(rows[startrownum+i])
+                    pxcount = min(width,curwidth+tile_width) - curwidth
+                    try:
+                        rows[startrownum+i] += tilerow_rawpixels[:pxcount]
+                    except(IndexError):
+                        print(startrownum+i)
+
+    pngoutpath = "{}.png".format(os.path.splitext(os.path.basename(descpath))[0])
+    with open(pngoutpath, 'wb') as pngout:
+        write_pngsig(pngout)
+        if is_indexed_bitmap(bmp_type):
+            write_ihdr(pngout, width, height, 8, 3)  # 8bpp (PLTE)
+            write_plte(pngout, palettepng)
+            write_trns(pngout, transpng)
+
+        elif bmp_type == 0x03:  # ABGR truecolor
+            write_ihdr(pngout, width, height, 8, 6)  # 32bpp
+
+        # split into rows and add png filtering info (mandatory even with no filter)
+        rowdata = b''
+        for row in rows:
+            rowdata += b'\x00' + row
+        
+        write_idat(pngout, rowdata)
+        write_iend(pngout)
+    call(["cmd", "/c", "start", pngoutpath])
+
+""" Commented out: output each tile individually (tga/png)
+    ###
     for infilepath in glob.iglob("*.out"):
         print(infilepath)
         outfilepath = outfilepattern.format(infilepath)
@@ -151,3 +231,4 @@ if __name__ == '__main__':
             write_iend(pngout)
 
         #call(["cmd", "/c", "start", outfilepath])
+"""
