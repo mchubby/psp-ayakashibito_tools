@@ -144,12 +144,6 @@ def writefile_in_directory_with_collisions(dirpath, ent, mrgfile, collision_suff
 
     return newname  # None or string
 
-def read_0_string(bstr):
-    try:
-        return bstr[0:bstr.index(b'\x00')].decode('ASCII')
-    except ValueError:
-        return bstr.decode('ASCII')
-
 def get_entry_index_by_name(entries_list, name):
     for idx in range(len(entries_list)):
         if entries_list[idx]['name'] == name:
@@ -173,6 +167,75 @@ def write_entry_with_padding(infile, entry, outfile):
         while complement & 0x7FF != 0:
             outfile.write(b'\x0C' + 15 * b'\x00')
             complement += 0x10
+
+class NamUtil:
+
+    """
+    Utils for .NAM file
+    Copyright (c) 2016 Hintay <hintay@me.com>
+    """
+
+    def __init__(self, in_nam):
+        self.data = open(in_nam, 'rb')
+        self.basestem = in_nam
+        self.encoding = 'Shift_JIS'
+        self.indexed = False
+        self.namlength = None
+        self.namtotal = None
+        self.namindex = None
+        self.namsize = os.path.getsize(in_nam)
+        self.get_info()
+
+    def get_info(self):
+        self.check_indexed()
+        if(self.indexed == False):
+            self.check_namlength()
+            return
+            #return [self.indexed, self.namlength, self.namtotal]
+        self.check_namtotal()
+        self.make_namindex()
+        #return [self.indexed, self.namlength, self.namtotal]
+
+    def check_indexed(self):
+        if(self.data.read(0x7) == b'MRG.NAM'):
+            self.indexed = True
+            self.namindex = OrderedDict()
+
+    def check_namlength(self):
+        self.namlength = 0x8 if self.basestem.find('voice') >= 0 else 0x20
+
+    def check_namtotal(self):
+        self.data.seek(0x10)
+        self.namtotal, = unpack("<I", self.data.read(0x4))
+
+    def make_namindex(self):
+        self.data.seek(0x20)
+        for i in range(self.namtotal):
+            self.namindex[i], = unpack("<I", self.data.read(0x4))
+        self.namindex[self.namtotal] = self.namsize
+
+    def read_0_string(self, bstr):
+        try:
+            return bstr[0:bstr.index(b'\x00')].decode(self.encoding)
+        except ValueError:
+            return bstr.decode(self.encoding)
+
+    def get_name_with_index(self, count):
+        length = self.namindex[count+1] - self.namindex[count] - 4
+        self.data.seek(self.namindex[count])
+        in_cout, = unpack("<I", self.data.read(4))
+        if(in_cout == count):
+            return self.data.read(length)
+        else:
+            print('ERR: can not get name from index {0}, the in-header index is {1}', count, in_cout)
+    
+    def get_name(self, count):
+        if(self.indexed):
+            name = self.get_name_with_index(count)
+        else:
+            self.data.seek(self.namlength * count)
+            name = self.data.read(self.namlength)
+        return self.read_0_string(name)
 
 #############################################################################
 
@@ -229,7 +292,7 @@ def unpack_verb(args):
         if str.upper(os.path.splitext(args.input)[1]) != '.HED':
             raise CustomException("'{}' must be a .hed file".format(args.input))
         hedfile = open(in_hed, 'rb')
-        if os.path.isfile(in_nam): namfile = open(in_nam, 'rb')
+        if os.path.isfile(in_nam): namfile = NamUtil(in_nam)
         mrgfile = open(in_mrg, 'rb')
         makedir(outputdir)
     except Exception as exc:
@@ -256,7 +319,7 @@ def unpack_verb(args):
         first_word, = unpack_from('<L', blob)
         if first_word == 0xFFFFFFFF:
             continue
-        namfilename = None if namfile is None else read_0_string(namfile.read(0x20))
+        namfilename = None if namfile is None else namfile.get_name(i)
         entry = HedEntry(blob, name=namfilename)
         print("|- {0} - {1} b".format(entry.name, entry.size), file=stderr)
         newfilename = writefile_in_directory_with_collisions(outputdir, entry, mrgfile, collision_suffix=indexed_fmt.format(i))
@@ -316,7 +379,7 @@ def replace_verb(args):
             
     if len(sourcepaths) == 0:
         print("ERR: failed to process \"{0}\" - --source {1} does not match any file".format(args.filelist.name, args.source), file=stderr)
-            sys.exit(1)
+        sys.exit(1)
     elif len(sourcepaths) == 1:
         special_first = True
     else:

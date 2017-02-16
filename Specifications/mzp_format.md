@@ -1,6 +1,6 @@
  The .mzp format (Incomplete)
 =================
-> Revision 0, maintainer: Waku_Waku
+> Revision 1, maintainer: Waku_Waku, Hintay
 
 > Reverse-engineered by Waku_Waku
 
@@ -35,8 +35,8 @@ Location of entry data within the archive is calculated as such:
 
 - data start offset is (header size) = (6 + 2 + n * 8) bytes [see section I]
 - Real offset = data start offset + .ofsSect * 0x800 + .ofsByte
-- .upperBoundSectCount * 0x800 <= .sizeRaw so an entry is at most 0x10000 bytes
-
+- ~~.upperBoundSectCount * 0x800 <= .sizeRaw so an entry is at most 0x10000 bytes~~
+- Real size = (.upperBoundSectCount - 1) // 0x20 * 0x800 * 0x20 + .sizeRaw
 
  II) First Entry (picture / animation)
 =======================================
@@ -66,6 +66,9 @@ Example:
 
 - elif bitDepthVal & 0x10 != 0:  
     ( 16 * 4 bytes): **4bpp color palette**
+
+- if bitDepthVal == 0x11:  
+    The palette format is **RGBATim2**
 
 beware, palette data is ABGR (RR GG BB AA in little-endian)
 

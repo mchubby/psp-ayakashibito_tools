@@ -3,7 +3,7 @@
 
  Used Tools
 ------------
-- hedutil.py [in-house dev]
+- `hedutil.py` [in-house dev / Python 3]
 
 
  About

@@ -6,7 +6,7 @@ def mzx0_decompress(f, inlen, exlen, xorff=False):
     """Decompress a block of data.
     """
     dout = bytearray(b'\0' * (exlen+50)) # slightly overprovision for writes past end of buffer
-    ringbuf = [b'\0'] * 128
+    ringbuf = bytearray(b'\0' * 128)
     ring_wpos = 0
     clear_count = 0
     offset = 0
